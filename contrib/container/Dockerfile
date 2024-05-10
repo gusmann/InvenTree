@@ -138,7 +138,10 @@ FROM inventree_base AS dev
 # Vite server (for local frontend development)
 EXPOSE 5173
 
-# Install packages required for building python packages
+# https://github.com/helm/helm/releases/latest
+ENV HELM_VERSION="3.14.4"
+
+# Install packages required for building python packages, helm charts, and working with k8s
 RUN ./install_build_packages.sh
 
 RUN pip install --require-hashes -r base_requirements.txt --no-cache
