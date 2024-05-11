@@ -1,0 +1,121 @@
+CHART NAME: {{ .Chart.Name }}
+CHART VERSION: {{ .Chart.Version }}
+APP VERSION: {{ .Chart.AppVersion }}
+
+{{- $releaseNamespace := .Release.Namespace }}
+{{- $clusterDomain := .Values.clusterDomain }}
+{{- $fullname := include "common.names.fullname" . }}
+{{- $secretName := include "inventree.secretName" . }}
+
+** Please be patient while the chart is being deployed **
+
+{{- if .Values.diagnosticMode.enabled }}
+
+The chart has been deployed in diagnostic mode. All probes have been disabled and the command has been overwritten with:
+
+  command: {{- include "common.tplvalues.render" (dict "value" .Values.diagnosticMode.command "context" $) | nindent 4 }}
+  args: {{- include "common.tplvalues.render" (dict "value" .Values.diagnosticMode.args "context" $) | nindent 4 }}
+
+Get the list of pods by executing:
+
+    kubectl get pods --namespace {{ $releaseNamespace }} -l app.kubernetes.io/instance={{ .Release.Name }}
+
+Access the pod you want to debug by executing
+
+    kubectl exec --namespace {{ $releaseNamespace }} -ti <NAME OF THE POD> -- bash
+
+
+{{- else }}
+
+{{- if empty (include "inventree.host" .) }}
+
+###############################################################################
+### ERROR: You did not provide an external host in your 'helm install' call ###
+###############################################################################
+
+This deployment will be incomplete until you configure inventree with a resolvable host. To configure inventree with the URL of your service:
+
+1. Get the inventree URL by running:
+
+  {{- if contains "NodePort" .Values.service.type }}
+
+    export inventree_HOST=$(kubectl get nodes --namespace {{ $releaseNamespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+    export inventree_PORT=$(kubectl get svc {{ $fullname }} --namespace {{ $releaseNamespace }} -o jsonpath="{.spec.ports[0].nodePort}")
+
+  {{- else if contains "LoadBalancer" .Values.service.type }}
+
+  NOTE: It may take a few minutes for the LoadBalancer IP to be available.
+        Watch the status with: 'kubectl get svc --namespace {{ $releaseNamespace }} -w {{ $fullname }}'
+
+    export inventree_HOST=$(kubectl get svc --namespace {{ $releaseNamespace }} {{ $fullname }} --template "{{ "{{ range (index .status.loadBalancer.ingress 0) }}{{ . }}{{ end }}" }}")
+    export inventree_PORT={{ .Values.service.ports.http }}
+
+  {{- end }}
+
+2. Complete your inventree deployment by running:
+
+    helm upgrade --namespace {{ $releaseNamespace }} {{ .Release.Name }} oci://ghcr.io/inventree/{{ .Chart.Name }} \
+      {{- if .Values.global }}
+      {{- if .Values.global.imagePullSecrets }}
+      --set global.imagePullSecrets={{ .Values.global.imagePullSecrets }} \
+      {{- end }}
+      {{- end }}
+      --set service.type={{ .Values.service.type }} \
+      --set host="$inventree_HOST:$inventree_PORT"
+
+{{- else -}}
+
+inventree can be accessed via port {{ .Values.service.ports.http }} on the following DNS name from within your cluster:
+
+    {{ printf "%s.%s.svc.%s" $fullname $releaseNamespace $clusterDomain }}
+
+To connect to inventree from outside the cluster, perform the following steps:
+
+{{- if .Values.ingress.enabled }}
+
+1. Get the inventree URL and associate its hostname to your cluster external IP:
+
+    export CLUSTER_IP=$(minikube ip) # On Minikube. Use: `kubectl cluster-info` on others K8s clusters
+    echo "inventree URL: http{{ if .Values.ingress.tls }}s{{ end }}://{{ .Values.ingress.hostname }}"
+    echo "$CLUSTER_IP  {{ .Values.ingress.hostname }}" | sudo tee -a /etc/hosts
+
+{{- else if eq .Values.service.type "ClusterIP" }}
+
+1.  Create a port-forward to the service:
+
+    kubectl port-forward --namespace {{ $releaseNamespace }} svc/{{ $fullname }} {{ .Values.service.ports.http }}:{{ .Values.service.ports.http }} &
+    echo "inventree URL: http://127.0.0.1:{{ .Values.service.ports.http }}"
+
+{{- else if eq .Values.service.type "NodePort" }}
+
+1. Obtain the NodePort IP and port:
+
+    export NODE_IP=$(kubectl get nodes --namespace {{ $releaseNamespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+    export NODE_PORT=$(kubectl get svc --namespace {{ $releaseNamespace }} {{ $fullname }} -o jsonpath="{.spec.ports[0].nodePort}")
+    echo "inventree URL: http://${NODE_IP}:$NODE_PORT"
+
+{{- else if eq .Values.service.type "LoadBalancer" }}
+
+1. Obtain the LoadBalancer IP:
+
+  NOTE: It may take a few minutes for the LoadBalancer IP to be available.
+        Watch the status with: 'kubectl get svc --namespace {{ .Release.Namespace }} -w {{ $fullname }}'
+
+    export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ $fullname }} --template "{{ "{{ range (index .status.loadBalancer.ingress 0) }}{{ . }}{{ end }}" }}")
+    echo "inventree URL: http://${SERVICE_IP}:{{ .Values.service.ports.http }}"
+
+{{- end }}
+
+2. Open a browser and access inventree using the obtained URL.
+
+3. Get your inventree login credentials by running:
+
+    {{ include "common.utils.secret.getvalue" (dict "secret" $secretName "field" "inventree-password" "context" $) }}
+    echo User:     {{ .Values.auth.username }}
+    echo Password: $inventree_PASSWORD
+
+{{- end }}
+{{- end }}
+
+{{- include "common.warnings.rollingTag" .Values.image }}
+{{- include "common.warnings.resources" (dict "sections" (list "inventree" "sidekiq" "volumePermissions") "context" $) }}
